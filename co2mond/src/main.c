@@ -2,6 +2,8 @@
  * co2mon - programming interface to CO2 sensor.
  * Copyright (C) 2015  Oleg Bulatov <oleg@bulatov.me>
  *
+ * MQTT option added by Andreas Seiderer
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
@@ -30,6 +32,7 @@
 #include <unistd.h>
 
 #include "co2mon.h"
+#include "mongoose.h"
 
 #define CODE_TAMB 0x42 /* Ambient Temperature */
 #define CODE_CNTR 0x50 /* Relative Concentration of CO2 */
@@ -37,12 +40,86 @@
 #define PATH_MAX 4096
 #define VALUE_MAX 20
 
+
+
+struct mg_mgr mgr;
+struct mg_connection *nc_stat;
+
+
 int daemonize = 0;
 int print_unknown = 0;
 const char *devicefile = NULL;
 char *datadir;
+int mqtt_enabled = 0;
 
 uint16_t co2mon_data[256];
+
+
+
+
+static const char *address = "localhost:1883";
+
+
+static void ev_handler(struct mg_connection *nc, int ev, void *p) {
+  struct mg_mqtt_message *msg = (struct mg_mqtt_message *) p;
+  (void) nc;
+
+  switch (ev) {
+    case MG_EV_CONNECT: {
+
+      mg_set_protocol_mqtt(nc);
+      mg_send_mqtt_handshake(nc, "CO2mon");
+      break;
+    }
+    case MG_EV_MQTT_CONNACK:
+      if (msg->connack_ret_code != MG_EV_MQTT_CONNACK_ACCEPTED) {
+        printf("Got mqtt connection error: %d\n", msg->connack_ret_code);
+        exit(1);
+      }
+      printf("connected to mqtt server.\n");
+      //printf("Subscribing to '/stuff'\n");
+      //mg_mqtt_subscribe(nc, topic_expressions,
+      //                  sizeof(topic_expressions) / sizeof(*topic_expressions),
+      //                  42);
+      break;
+    case MG_EV_MQTT_PUBACK:
+      printf("Message publishing acknowledged (msg_id: %d)\n", msg->message_id);
+      break;
+    case MG_EV_MQTT_SUBACK:
+      printf("Subscription acknowledged, forwarding to '/test'\n");
+      break;
+    case MG_EV_MQTT_PUBLISH: {
+      /*printf("Got incoming message %s: %.*s\n", msg->topic,
+             (int) msg->payload.len, msg->payload.p);
+
+      printf("Forwarding to /test\n");
+      mg_mqtt_publish(nc, "/test", 65, MG_MQTT_QOS(0), msg->payload.p,
+                      msg->payload.len);*/
+      break;
+    }
+    case MG_EV_CLOSE:
+      printf("Connection closed\n");
+			
+     nc_stat = 0;
+
+     printf("Reconnect ...");
+     nc_stat = mg_connect(&mgr, address, ev_handler);
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 static int
 lock(int fd, short int type)
@@ -173,6 +250,10 @@ device_loop(co2mon_device dev)
         case CODE_TAMB:
             snprintf(buf, VALUE_MAX, "%.4f", decode_temperature(w));
 
+            if (nc_stat) {
+                    mg_mqtt_publish(nc_stat, "/CO2mon/temp", 65, MG_MQTT_QOS(0), buf, strlen(buf));
+            }
+
             if (!daemonize)
             {
                 printf("Tamb\t%s\n", buf);
@@ -197,8 +278,12 @@ device_loop(co2mon_device dev)
             }
             snprintf(buf, VALUE_MAX, "%d", (int)w);
 
+            if (nc_stat) {
+                    mg_mqtt_publish(nc_stat, "/CO2mon/CO2", 65, MG_MQTT_QOS(0), buf, strlen(buf));
+            }
+
             if (!daemonize)
-            {
+            { 
                 printf("CntR\t%s\n", buf);
                 fflush(stdout);
             }
@@ -222,6 +307,8 @@ device_loop(co2mon_device dev)
             }
             co2mon_data[r0] = w;
         }
+
+        mg_mgr_poll(&mgr, 500);
     }
 }
 
@@ -259,6 +346,8 @@ main_loop()
 
         device_loop(dev);
 
+        mg_mgr_free(&mgr);
+
         co2mon_close_device(dev);
     }
 }
@@ -272,7 +361,7 @@ int main(int argc, char *argv[])
     int c;
     int opterr = 0;
     int show_help = 0;
-    while ((c = getopt(argc, argv, ":dhuD:f:l:p:")) != -1)
+    while ((c = getopt(argc, argv, ":dhumD:f:l:p:a:")) != -1)
     {
         switch (c)
         {
@@ -284,6 +373,9 @@ int main(int argc, char *argv[])
             break;
         case 'u':
             print_unknown = 1;
+            break;
+        case 'm':
+            mqtt_enabled = 1;
             break;
         case 'D':
             reldatadir = optarg;
@@ -297,6 +389,9 @@ int main(int argc, char *argv[])
         case 'p':
             pidfile = optarg;
             break;
+        case 'a':
+            address = optarg;
+            break;
         case ':':
             fprintf(stderr, "Option -%c requires an operand\n", optopt);
             opterr++;
@@ -308,7 +403,7 @@ int main(int argc, char *argv[])
     }
     if (show_help || opterr || optind != argc)
     {
-        fprintf(stderr, "usage: co2mond [-dhu] [-D datadir] [-f device] [-p pidfle] [-l logfile]\n");
+        fprintf(stderr, "usage: co2mond [-dhum] [-D datadir] [-f device] [-p pidfle] [-l logfile] [-a address]\n");
         if (show_help)
         {
             fprintf(stderr, "\n");
@@ -317,23 +412,15 @@ int main(int argc, char *argv[])
             fprintf(stderr, "  -u    print values for unknown items\n");
             fprintf(stderr, "  -D datadir\n");
             fprintf(stderr, "        store values from the sensor in datadir\n");
-            fprintf(stderr, "  -f devicefile\n");
-#ifdef __linux__
-            fprintf(stderr, "        path to a device (e.g., /dev/hidraw0)\n");
-#else
-            fprintf(stderr, "        path to a device\n");
-#endif
             fprintf(stderr, "  -p pidfile\n");
             fprintf(stderr, "        write PID to a file named pidfile\n");
             fprintf(stderr, "  -l logfile\n");
             fprintf(stderr, "        write diagnostic information to a file named logfile\n");
+            fprintf(stderr, "  -m    enable MQTT client\n");
+            fprintf(stderr, "  -a address\n");
+            fprintf(stderr, "        set address of MQTT server; default: localhost:1883\n");
             fprintf(stderr, "\n");
         }
-        exit(1);
-    }
-    if (daemonize && !reldatadir)
-    {
-        fprintf(stderr, "co2mond: it is useless to use -d without -D.\n");
         exit(1);
     }
 
@@ -393,6 +480,25 @@ int main(int argc, char *argv[])
         dup2(logfd, fileno(stderr));
         close(logfd);
     }
+
+    nc_stat = 0;
+    if (mqtt_enabled) {
+
+        printf("trying to connect to mqtt server %s ...\n", address);
+
+        mg_mgr_init(&mgr, NULL);
+
+        nc_stat = mg_connect(&mgr, address, ev_handler);
+
+        if (nc_stat == NULL) {
+            fprintf(stderr, "mg_connect(%s) failed\n", address);
+            exit(1);
+        }
+
+        mg_mgr_poll(&mgr, 500);
+    }
+
+
 
     int r = co2mon_init();
     if (r < 0)
