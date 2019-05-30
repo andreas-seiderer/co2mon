@@ -1,39 +1,34 @@
-# Software for CO2 Monitor
+# Software for CO2 Monitor with MQTT support
+This is a fork of "dmage/co2mon". Please see the original repository for further details and updates.
+The functionality should be identical to the original software with the addition of the MQTT support. 
 
-## Installation
+It has been tested with the TFA Dostmann AirCO2ntrol Mini connected to a Raspberry Pi 3 B running Raspbian. The identical device is sold by different resellers and with varying names.
 
-### Arch Linux
-[There is PKGBUILD in AUR](https://aur.archlinux.org/packages/co2mon-git/). The simplest way to [install](https://wiki.archlinux.org/index.php/Arch_User_Repository#Installing_packages) is using yaourt:
+## Compiling
 
-`yaourt -S co2mon-git`
+### Prerequisites
+#### Ubuntu / Raspbian
+sudo apt-get install cmake make g++ pkg-config libhidapi-dev
 
-### Fedora GNU/Linux and RHEL/CentOS/Scientific Linux
-co2mon packages can be installed from russianfedora-free repo or directly from [koji](http://koji.russianfedora.pro/koji/packageinfo?packageID=174)
+#### Arch
+sudo pacman -S cmake make gcc hidapi
 
-Install repo:
+### Compilation
+```
+mkdir build
+cd build
+cmake ..
+make
+./co2mond/co2mond
+```
 
-`su -c 'dnf install --nogpgcheck http://mirror.yandex.ru/fedora/russianfedora/russianfedora/free/fedora/russianfedora-free-release-stable.noarch.rpm http://mirror.yandex.ru/fedora/russianfedora/russianfedora/nonfree/fedora/russianfedora-nonfree-release-stable.noarch.rpm'`
+## Usage of MQTT client
+```
+./co2mond -ma IP-Address:Port
+```
+Parameter "m" activates the MQTT client.
+If parameter "a" is not provided the address and port of the MQTT server will default to "localhost:1883".
 
-Install co2mon:
-
-`dnf install co2mon`
-
-### From sources
-
-    # macOS
-    brew install cmake pkg-config hidapi
-
-    # Ubuntu
-    apt-get install cmake g++ pkg-config libhidapi-dev
-
-    mkdir build
-    cd build
-    cmake ..
-    make
-    ./co2mond/co2mond
-
-## See also
-
-  * [ZyAura ZG01C Module Manual](http://www.zyaura.com/support/manual/pdf/ZyAura_CO2_Monitor_ZG01C_Module_ApplicationNote_141120.pdf)
-  * [RevSpace CO2 Meter Hacking](https://revspace.nl/CO2MeterHacking)
-  * [Photos of the device and the circuit board](http://habrahabr.ru/company/masterkit/blog/248403/)
+Temperature (degree Celsius) and CO2 (ppm) data will be sent to the MQTT topics:
+* "/CO2mon/temp"
+* "/CO2mon/CO2"
